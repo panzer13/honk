@@ -169,10 +169,10 @@ For NFQUEUE ingress, `PendingUdpVerdicts` owns token/generation, phase, FIFO ver
 Each UDP flow retains at most 64 datagrams including its first packet. All flows share an exact 8 MiB payload-permit budget. Admission obtains per-flow slots and global byte permits before copying; FIFO saturation drops the newest datagram. NFQUEUE has a separate ingest actor bounded to 256 entries and 8 MiB of queued payload.
 
 At startup, `honk-core` tries to raise the soft `RLIMIT_NOFILE`, snapshots the
-active value once, and caps the budgeting input at 1,048,576. VLESS carrier
-capacity is carved out as `min(after_dials / 8, 8192)` before the remaining
-descriptor budget determines UDP endpoint count. At the cap the fixed partition
-is:
+active value once, and caps the budgeting input at 1,048,576. DNS sockets receive
+a separate `min(transient_dials, 256)` partition, also bounded by the remaining
+descriptors. VLESS capacity then uses `min(after_dns / 8, 8192)` before the
+remaining budget determines UDP endpoint count. At the cap the fixed partition is:
 
 | Owner | Capacity | Descriptor accounting |
 | --- | ---: | ---: |
@@ -180,9 +180,10 @@ is:
 | Accepted TCP flows | 16,384 | 6 each = 98,304 |
 | Retained TCP pool | 2048 | 1 each = 2048 |
 | Transient outbound dials | 1024 | 1 each = 1024 |
+| DNS-owned sockets | 256 | 1 credit per socket; endpoint network bootstrap reserves 2 (raw proxy-node resolver sockets are uncharged, see [DNS admission](./dns.md#resolution-pipeline)) |
 | VLESS physical carriers | 8192 | 1 each = 8192 |
 | UDP endpoints | 32,768 | 10 each = 327,680 |
-| **Total** |  | **437,504** |
+| **Total** |  | **437,760** |
 
 One UDP endpoint budgets a relay socket, a possible SOCKS5 control stream, and
 its eager anyfrom reply socket plus a share of the process-wide foreign pool,
@@ -215,10 +216,15 @@ Admission ceilings are distinct:
 | Admission | Ceiling |
 | --- | ---: |
 | TCP flow permits | Descriptor-derived floor plus bounded borrowing of observed idle non-TCP headroom |
-| VLESS physical carriers | Startup `min(after_dials / 8, 8192)` process gate |
+| VLESS physical carriers | Startup `min(after_dns / 8, 8192)` process gate |
 | Cold non-DNS UDP slow path | `min(udp_endpoints, 256)` |
-| Port-53 ingress slow path | `min(transient_dials, 256)` |
+| UDP DNS client lifecycles | `min(1536, MemTotal / 4 / 256 KiB)` process-wide, shared across reload |
+| All controller DNS query lifecycles | 2,048 per generation, shared by TCP and UDP |
+| DNS-owned sockets / endpoint network bootstrap | Separately backed process gate, at most 256 credits, shared across reload |
+| DNS proxy stream / non-raw packet preparation | Conservative process-wide logical leases, at most the DNS socket limit; not an aggregate proxy FD bound |
 | NFQUEUE ingest actor | 256 entries and 8 MiB |
+
+Proxy carrier ownership remains separate; see [DNS admission](./dns.md#resolution-pipeline) for the query and socket admission contracts.
 
 TCP accepts use the descriptor-derived flow budget, not a separate 256-entry ceiling. The [joined removal worker](./datapath.md#userspace-maintenance-and-accounting) serves TCP, UDP and expiry hints; UDP retains its 1024-message channel and deduplicating `removal_dirty` compensation. Exact tombstones are acknowledged only after owned I/O and backend retirement finish.
 
@@ -271,7 +277,7 @@ SIGHUP uses an attempt-local diagnostic list. Load and operator-validation warni
    Stopping a warm coordinator cancels retention-reconciliation waits that could depend on the other coordinator; dispatched child work is still aborted and joined before the coordinator exits. QUIC warm release and terminal close serialize on the client slot, including with native task ownership disabled; cancellation leaves the client available to terminal close.
 5. Reopen pending admission and NFQUEUE last. Rule-derived feature bits live in the policy descriptor, not a separately published static-flags map.
 
-`control/reload/transaction.rs` holds `reload_lock` around candidate preparation and commit. The changed-generation publication takes `router` → `config` → `datapath_flags.publication()` (native explicit source activation only) → `ebpf`, then the DNS projection-publication guard → `group_manager` → `outbound_id_map` → `active_routing_plan` → `runtime_registry`. The provider's DNS publication guard is prepared within those guards. Native no-op activation takes `config` → flags publication → `ebpf`, without a router replacement. `mode.rs` standalone mode/fence updates take the flags mutex → `ebpf`; `reset_for_activation` takes neither again and performs no await. NFQUEUE fence/reopen runs outside the router/config publication guards. This records existing lock edges, not permission to add new ones; changes remain subject to CONTRIBUTING §2/§11 and human review.
+`control/reload/transaction.rs` holds `reload_lock` around candidate preparation and commit. The changed-generation publication takes `router` → `config` → `datapath_flags.publication()` (native explicit source activation only) → `ebpf`, then the DNS projection-publication guard → `group_manager` → `outbound_id_map` → `active_routing_plan` → `runtime_registry`. Within those guards, the provider's DNS publication guard is acquired after backend staging and immediately before registry authority replacement, and remains held through the existing DNS pointer commit. Backend staging therefore does not hold provider admission, while registry transfer, callback installation and Score authority publication remain fenced from new old-generation DNS admissions. Native no-op activation takes `config` → flags publication → `ebpf`, without a router replacement. `mode.rs` standalone mode/fence updates take the flags mutex → `ebpf`; `reset_for_activation` takes neither again and performs no await. NFQUEUE fence/reopen runs outside the router/config publication guards. This records existing lock edges, not permission to add new ones; changes remain subject to CONTRIBUTING §2/§11 and human review.
 
 `RoutingPushPlan::compile` is the only userspace lowering path; there is no caller-selected slot or separate domain-publication handshake. The `routing_policy.rs` ABI is `RoutingInput` 128 bytes, `RoutingDecision` 24 bytes, and `RoutingPolicyDescriptor` 24 bytes. Real eBPF requires Linux 6.12+; generated process-name matching checks `pname_len` before fixed-offset reads for the 6.12 verifier. Loaded routing slots must expose the current output layout in BTF.
 
