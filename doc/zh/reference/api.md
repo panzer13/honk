@@ -1058,8 +1058,8 @@ ID 不对应当前任何组时返回 `409 state_conflict`。已存储的组被�
 
 | `.github/ci/pins.env` 中的固定项 | 值 |
 | --- | --- |
-| doona 版本 | `0.1.0-rc.3` |
-| 提交 | `931be7f19c481c8d2ce01509faa0f9050ce175bb` |
+| doona 版本 | `0.1.0-rc.4` |
+| 提交 | `58dfe2e2d1bccb1c0363895adb27eb4bfa1e932d` |
 | 压缩包校验和 | `DOONA_SHA256`、`DOONA_LITE_SHA256` |
 
 在仓库根目录执行 `export HONK_DOONA_DIR=$(ci/fetch-doona.sh)`。脚本依次执行：
@@ -1081,7 +1081,7 @@ ID 不对应当前任何组时返回 `409 state_conflict`。已存储的组被�
 - 从 [doona 发布页](https://github.com/Zakkaus/doona/releases)下载 `doona-<version>.tar.gz` 与 `doona-fonts-<version>.tar.gz`，解压到同一目录，并让 `ui` 指向该目录。
 - 安装 `doona` 与 `doona-fonts` 软件包，并设置 `ui: /usr/share/doona`。
 
-两种版本共用的 GPL-3.0-only 源码是 doona 标签 [`v0.1.0-rc.3`](https://github.com/Zakkaus/doona/tree/v0.1.0-rc.3)。发布流程将 `doona-source-0.1.0-rc.3.tar.gz` 附加到正式标签发布与滚动 Debug 发布。该包由 `ci/fetch-doona.sh --source` 生成：先确认标签仍指向固定提交，再执行 `git archive --format=tar --prefix=doona/ v0.1.0-rc.3 | gzip -n`（GNU gzip）。
+两种版本共用的 GPL-3.0-only 源码是 doona 标签 [`v0.1.0-rc.4`](https://github.com/Zakkaus/doona/tree/v0.1.0-rc.4)。发布流程将 `doona-source-0.1.0-rc.4.tar.gz` 附加到正式标签发布与滚动 Debug 发布。该包由 `ci/fetch-doona.sh --source` 生成：先确认标签仍指向固定提交，再执行 `git archive --format=tar --prefix=doona/ v0.1.0-rc.4 | gzip -n`（GNU gzip）。
 
 再分发 `native-ui` 二进制时，须保留声明，并按 GPL-3.0 第 6 条允许的方式提供对应源码。
 
@@ -1131,9 +1131,9 @@ Global 绑定稳定身份，目标消失后新流量失败时拒绝转发，不�
 
 关闭时间没有硬上限。abort async 外层不会取消已开始的 blocking 工作。StateTick 维护所有者超过名义停止期限后告警，继续等待实际 SQLite 工作。
 
-凭据 KDF/数据库工作及已开始的系统解析/NSS 同样保留真实等待结束。清理阶段超期不能丢弃所有者。关闭准入、停止监视器并 detach 挂钩后，健康运行中的连接有默认 5 秒 drain 宽限期，随后强制取消并等待结束。
+凭据 KDF/数据库工作及已开始的系统解析/NSS 同样保留真实等待结束。可选的[业务连接宽限等待](./global.md#关闭)不允许在清理阶段超期时丢弃所有者来声称成功。
 
-故障退出不承诺该宽限期。原生 HTTP 自身另有 5 秒 graceful drain，上述阻塞等待结束仍可能延长总退出时间。
+原生 HTTP 自身另有五秒 graceful drain，上述阻塞等待结束仍可能延长总退出时间。见[终止所有权](../design/control-plane.md#终止所有权)。
 
 ## 启用与鉴权
 
