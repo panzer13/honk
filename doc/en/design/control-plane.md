@@ -44,7 +44,7 @@ Startup keeps kernel admission closed until userspace can receive every redirect
 9. Bind the transparent TCP/UDP listeners, publish the complete listener FD set, start the standalone DNS and UDP receive loops, then start the NFQUEUE service and its ingest actor, correlator, watchdog, and independent one-second queue-pressure sampler when the effective flag remains enabled.
 10. Check NFQUEUE health, publish its ready state, open pending verdict admission, and set `DATAPATH_STATE_MAP[0]` ready last. The TCP accept loop then runs in the control-plane supervisor.
 
-`RealEbpfBackend` owns aya programs, maps, links, persistent allocator handling, and real NFQUEUE integration. `MockEbpfBackend` provides the same control-plane interface without privileged kernel resources. A requested NFQUEUE path that cannot pass the post-lock fixed-queue preflight is disabled with a warning; failures after the service is admitted remain fatal.
+`RealEbpfBackend` owns aya programs, maps, links, persistent allocator handling, and real NFQUEUE integration. `MockEbpfBackend` provides the same control-plane interface without privileged kernel resources. A requested NFQUEUE path that cannot pass the post-lock fixed-queue preflight or later pre-admission queue/rules/health checks is disabled with a warning; that startup downgrade remains effective across reloads ([global reference](../reference/global.md)). Persistent token-generation recovery failures and failures after the service is admitted remain fatal.
 
 Object admission rejects implicit `ByName` map pinning before the process-name probe or any Aya loader runs. External objects must declare unpinned maps; core supplies all pin paths explicitly, including the persistent allocators, so no loader-created alias can escape startup rollback.
 
@@ -267,6 +267,8 @@ After a real relay completes, the TCP owner settles its actual Score outcome and
 
 SIGHUP uses an attempt-local diagnostic list. Load and operator-validation warnings are reported once on either outcome; a rejected attempt reports one redacted cause and never reaches runtime publication. Attempt reporting does not replace active runtime state or introduce a last-failed-attempt cache.
 
+The common reload transaction normalizes the candidate's effective NFQUEUE value before fingerprint/no-op and restart checks, preserving any recorded early or late pre-admission startup downgrade. Native pre-write checks and full validation share that restart policy without rewriting requested source intent; see the [startup exception](../reference/global.md) and [native configuration API](../reference/api.md).
+
 `apply_runtime_config` first builds the replacement router, group manager, outbound registry, DNS runtime, and routing plan without mutating live state. Commit ordering is:
 
 1. Fence NFQUEUE readiness and complete the synchronous kernel grace barrier.
@@ -309,7 +311,7 @@ The current process-scoped consumers reject a SIGHUP reload when any of these va
 | Clash API | `experimental.clash_api.external_controller`, `external_ui`, `secret`, `default_mode`; effective `assets.ui.url` and `assets.ui.route` |
 | Native API | Any `experimental.native_api` change; effective `assets.geodata.geosite`, `assets.geodata.geoip`, `assets.geodata.route` |
 | Persistence | `experimental.cache_file.enabled`, `store_dns` |
-| NFQUEUE | `global.nfqueue_enable` |
+| NFQUEUE | `global.nfqueue_enable`, except after a recorded pre-admission startup downgrade ([exception](../reference/global.md)) |
 | Health probes and TLS | `global.check_interval`, the effective first `global.tcp_check_url`, `global.tcp_check_http_method` when HTTP probing is enabled, the selected `global.udp_check_dns` target, or a native TLS/uTLS mode change ([health-check reload semantics](../reference/global.md#reloading-health-checks-and-tls-mode)) |
 
 The effective UI and geodata settings include the fallback from `assets.route`; changing that fallback requires restart when it changes either startup-owned download route. `assets.subscription` defaults and individual subscription options are handled by subscription reconciliation.
@@ -330,7 +332,7 @@ On `SIGHUP`, subscription IDs are stabilized by fetch identity (URL + configured
 
 Body acceptance and runtime publication are reported separately. A collection-admission rejection emits one redacted diagnostic and retains the active generation; it does not roll back an already stored body.
 
-- `src/subscription.rs` owns fetching and parsing; `subscription/store.rs` owns SQLite raw-body persistence and the FD-relative legacy import. `subscription/supervisor.rs` keeps current authorization and deferred/refresh-eligible scheduling in one provider record; `supervisor/startup.rs` restores cached bodies and applies the direct-only shared five-second startup grace. Startup and steady-state share one supervisor state. In-flight work retains its captured revision and publication acknowledgement independently of replacement scheduling; pause/shutdown joins it, rather than reconciliation discarding a possibly committed reply.
+- `src/subscription.rs` owns fetching and parsing; `subscription/store.rs` owns SQLite raw-body persistence and the FD-relative legacy import. `subscription/supervisor.rs` owns authorization and in-flight work; `supervisor/schedule.rs` owns provider timing, and `supervisor/startup.rs` restores cached bodies with the direct-only shared five-second startup grace. Startup and steady-state share one supervisor state. In-flight work retains its captured revision and publication acknowledgement independently of replacement scheduling; pause/shutdown joins it, rather than reconciliation discarding a possibly committed reply.
 - Daemon fetch/restore and `honk-tool sub` local files share body detection. Simple/Custom accept BOM, wrapped standard/URL-safe Base64, raw share links, Clash YAML/JSON, SIP008, sing-box JSON, Surge/Surfboard/Loon/Quantumult X records. `src/subscription/json.rs` and `records.rs` normalize foreign records; `clash.rs` constructs/validates typed nodes. Never import full-profile routing/DNS/groups. Native JSON preserves Unicode surrogate-pair names. Skip unsupported nodes, retain first usable duplicate identity, preserve active subscriptions on empty results. Imported Trojan/AnyTLS/QUIC require TLS, never silent plaintext.
   Clash and sing-box TCP ALPN normalize to the shared TLS model, not TUIC's QUIC field. Shared-builder skip warnings expose only a one-based proxy index and static rejection reason, never raw node records or credentials.
 
