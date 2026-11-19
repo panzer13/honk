@@ -371,11 +371,11 @@ Per-flow condition expressions use the configured source spelling cached with th
 
 For handed-off traffic, kernel rule outcomes come from the compiled program's own branch witness, not from userspace re-evaluation. UDP also requires the received packet's capture ID. The tuple, decision token, routing generation and action must agree with the retained witness.
 
-A later tuple incarnation cannot supply an older packet's evidence. Capture IDs do not wrap. Frozen dictionaries retain at most 16 policies, 64 KiB each and 1 MiB total within the recorder reservation.
+A later tuple incarnation cannot supply an older packet's evidence. Capture IDs do not wrap. Frozen dictionaries retain at most 16 policies, 128 KiB each and 2 MiB total within the recorder reservation.
 
 Partial evidence results from dictionary rejection or eviction, missing witnesses, ambiguous TCP association, or executed overflow beyond 256 rule or condition values. Rules beyond that value ceiling that were not executed do not, by themselves, imply lost execution.
 
-If a policy's kernel trace dictionary would exceed 64 KiB, honk publishes it with kernel route tracing off and logs a warning. This applies at startup and on reload. Its flows report `kernel_trace_not_captured` rather than undecodable witnesses. The check sizes rule identifiers for the longest possible generation number, so a policy right at the bound may already be published untraced.
+If a policy's kernel trace dictionary would exceed 128 KiB, honk publishes it with kernel route tracing off and logs a warning. This applies at startup and on reload. Its flows report `kernel_trace_not_captured` rather than undecodable witnesses. The check sizes rule identifiers for the longest possible generation number, so a policy right at the bound may already be published untraced.
 
 Native extension fields keep source detail without inventing identities. Route input may carry `ingress`, `domain_fact_bitmap` and `domain_fact_state` instead of fabricated domain rule IDs. DNS-related outbound and connection steps carry `lookup_id`, and known physical peers carry `server_addr`. Selection facts include the health family and whether a decision was applied or only peeked.
 
@@ -1027,7 +1027,7 @@ A trace does not resolve DNS, dial, probe or mutate group selection. `resolve` d
 
 A request that violates that shape returns 400, while a well-shaped live request returns 422 because live resolution is unsupported. Content-Type, JSON and schema, input and resolve checks precede rate admission. Rejected validation consumes no trace-rate slot.
 
-Limits are one address, 256 rule or condition steps, five seconds and 30 requests per minute for the sole principal and globally.
+Limits are one address, five seconds and 30 requests per minute for the sole principal and globally. The step limit, advertised as `routing_trace.max_rule_steps`, is the larger of 4096 and the loaded policy's cost (1 plus, for each rule, 1 plus its condition count), so every loaded policy can be traced.
 
 The response is a `simulation` pinned to one `instance_id` and `generation_id`, not historical flow evidence. `/rules` returns the complete dictionary including fallback, never truncated. `max_rules` is 4096 or the running dictionary size if larger, and `dns_rules.max_rules` likewise covers the larger DNS list.
 
@@ -1137,7 +1137,7 @@ An unadvertised option, such as `cache` without its store, returns `422 unsuppor
 
 `201` with the live node or provider and its `Location` is returned only after activation and subscription reconciliation. HTTP disconnect does not cancel queued work. With `--store db`, these actions record a new revision instead of rewriting the main file.
 
-Node names are 1–64 characters and links at most 8192 characters. Provider names are 1–64 characters of ASCII letters, digits, `_`, `.` or `-`, with an HTTP(S) URL of at most 4096 characters. Schema length, pattern, enum or bound violations return `400 invalid_request`.
+Node names are 1–64 characters and links at most 8192 characters. Provider names are 1–64 characters without control characters; a name outside `[A-Za-z0-9_.-]` is written quoted, and one the configuration cannot quote returns `422 unsupported_value`. Provider URLs are HTTP(S) and at most 4096 characters. Schema length, pattern, enum or bound violations return `400 invalid_request`.
 
 Duplicate names return 409. Structurally valid but unsupported links, identities, provider URL schemes or options return 422. New providers start with zero nodes, stale status and no update time, even if an old cached body exists.
 
@@ -1279,6 +1279,30 @@ If every URL fails, the details describe the last attempted URL:
 
 `asset: geoip, stage: checksum_unavailable, http_status: 403` means the server refused the `.sha256sum`, not the file.
 
+`stage` is one of the following:
+
+| Stage | Meaning |
+| --- | --- |
+| `invalid_source` | The URL cannot be parsed, or it has no host or port. |
+| `download_timeout` | No response headers within 30 seconds, no body progress for 30 seconds, the whole download exceeded 10 minutes, or the checksum request exceeded its 10-second deadline. |
+| `connection_failed` | The connection or tunnel could not be established. |
+| `tls_failed` | TLS setup or certificate verification failed. |
+| `http_failed` | The HTTP exchange failed after the connection was established, such as a malformed response or a body read error. |
+| `http_not_found` | The file URL answered 404. |
+| `http_status_rejected` | The file URL answered a status other than 200, or the checksum URL answered a status other than 200 or 404; `http_status` carries the code. |
+| `content_encoding_rejected` | The server sent a content encoding other than identity. |
+| `asset_too_large` | The body exceeds 256 MiB, or the checksum body exceeds 1 KiB. |
+| `route_blocked` | The download route sent the request to `block`. |
+| `group_unavailable` | The route or its group has no usable outbound or node. |
+| `checksum_unavailable` | The checksum request failed with a status other than 404, or with another error. |
+| `checksum_mismatch` | The published digest differs from the file's SHA-256. |
+| `asset_validation_failed` | The downloaded file cannot satisfy the active configuration's geodata requirements, for example because it lacks a required category. |
+| `candidate_validation_failed` | The candidate configuration with the new asset fails validation. |
+| `staging_failed` | The verified bytes could not be staged for replacement. |
+| `replacement_failed` | The replacement was refused or failed before writing; that asset's bytes on disk are unchanged. |
+| `directory_sync_failed` | The bytes were written but the directory entry could not be confirmed durable. |
+| `written_asset_conflict` | The installed file changed before the final check. |
+
 Configured, stored and built-in geodata URLs, including their checksum requests, have no address or port allowlist.
 
 `verify_checksum` is `true` by default. When set to `false`, manual and automatic updates request no `.sha256sum` and use every downloaded file unverified. `verified` is `false`, and `sha256` is still reported. The setting suits mirrors that answer a missing checksum with a status other than 404 or with a page that is not a checksum.
@@ -1347,10 +1371,6 @@ From the repository root, run `export HONK_DOONA_DIR=$(ci/fetch-doona.sh)`. The 
 
 Full release builds include the embedded UI. The lean `-clash-api` and `-native-api` artifacts do not. The binary embeds each edition's own notices, and every full release tarball carries them under `doona/` and `doona-lite/`, respectively.
 
-Lite uses system fonts. The Noto Sans TC and SC fonts are not embedded. Doona's CSS declares those fonts with `font-display: optional`, so the browser falls back to system fonts when the font requests return 404.
-
-To use Noto Sans, extract `doona-<version>.tar.gz` and `doona-fonts-<version>.tar.gz` from the [doona release](https://github.com/Zakkaus/doona/releases) into one directory and point `ui` at it, or install the `doona` and `doona-fonts` packages and set `ui: /usr/share/doona`. Both editions share the corresponding GPL-3.0-only source at the doona tag [`v0.1.0-rc.5`](https://github.com/Zakkaus/doona/tree/v0.1.0-rc.5).
-
 The release workflow attaches `doona-source-0.1.0-rc.5.tar.gz` to the tag release and to the rolling Debug release. `ci/fetch-doona.sh --source` checks that the tag still points at the pinned commit and generates it with `git archive --format=tar --prefix=doona/ v0.1.0-rc.5 | gzip -n` (GNU gzip). Redistributors of a `native-ui` binary must preserve the notices and provide corresponding source through a method permitted by GPL-3.0 section 6.
 
 To reproduce the assets, extract the source archive into its own directory, use Node matching `^22.13.0 || ^24.0.0 || >=26.0.0` and `pnpm@11.15.1`. From the extracted source directory:
@@ -1365,6 +1385,8 @@ The epoch is the pinned upstream commit's timestamp. The source archive has no G
 Another gzip implementation can produce different archive hashes from identical tar bytes. Cargo builds embed only the files in `HONK_DOONA_DIR` and its `-lite` sibling and never build or download the frontend. That source's checker is `tools/conformance.mjs`.
 
 Its live walk is read-only and skips controls, diagnostics and missing observed IDs. Check base and management contracts, and exercise browser actions separately: schema passes alone are not full UI, kernel or platform acceptance.
+
+For fonts, UI installation and packaging, see the [doona manual](https://daeuniverse.org/doona/).
 
 ### Native logs and runtime settings
 

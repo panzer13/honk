@@ -226,15 +226,11 @@ async fn websocket_request_event_waits_for_real_frame_flush() {
         )
         .await;
         let (client, server) = tokio::io::duplex(65536);
-        let progress = Arc::new(parking_lot::Mutex::new(WsWriteProgress::default()));
-        let bridge = tokio::spawn(ws_bridge_relay(
-            websocket,
-            server,
-            Some(Arc::clone(&progress)),
-        ));
+        let pipe = crate::runtime::flow_observation::RelayedPipe::new();
+        let bridge = tokio::spawn(ws_bridge_relay(websocket, server, pipe.clone()));
         let mut stream = ObservedWs {
             inner: client,
-            progress,
+            pipe,
         };
         let request = vec![0x5a; 4096];
         observer
@@ -268,4 +264,35 @@ async fn websocket_request_event_waits_for_real_frame_flush() {
             assert!(bridge.await.unwrap_err().is_cancelled());
         }
     }
+}
+
+/// A CDN-fronted node names the edge IP as its address and the distribution
+/// only in the WebSocket `Host` header; SNI must follow the header or the
+/// edge answers with a certificate that cannot match the address.
+#[test]
+fn ws_tls_server_name_prefers_the_host_header() {
+    let mut node = transport_node(443);
+    node.tls_mut().unwrap().enabled = true;
+    node.transport_mut().unwrap().transport = "ws".into();
+    assert_eq!(tls_server_name(&node), "127.0.0.1");
+
+    node.transport_mut().unwrap().ws_host = Some("cdn.example".into());
+    assert_eq!(tls_server_name(&node), "cdn.example");
+
+    node.transport_mut().unwrap().ws_host = Some("cdn.example:8443".into());
+    assert_eq!(tls_server_name(&node), "cdn.example");
+
+    node.transport_mut().unwrap().ws_host = Some("[2001:db8::1]:8443".into());
+    assert_eq!(tls_server_name(&node), "2001:db8::1");
+
+    node.transport_mut().unwrap().ws_host = Some(String::new());
+    assert_eq!(tls_server_name(&node), "127.0.0.1");
+
+    node.tls_mut().unwrap().sni = Some("sni.example".into());
+    assert_eq!(tls_server_name(&node), "sni.example");
+
+    node.tls_mut().unwrap().sni = None;
+    node.transport_mut().unwrap().transport = "grpc".into();
+    node.transport_mut().unwrap().ws_host = Some("cdn.example".into());
+    assert_eq!(tls_server_name(&node), "127.0.0.1");
 }
